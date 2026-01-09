@@ -11,6 +11,9 @@ const POLICY_DOMAINS = [
   'Digital transformation and e-government',
 ] as const;
 
+const CURRENT_YEAR = new Date().getFullYear();
+const RECENT_YEARS = [CURRENT_YEAR, CURRENT_YEAR - 1, CURRENT_YEAR - 2].join(' ');
+
 // Country-specific context for better search results
 const COUNTRY_CONTEXT: Record<string, { agencies: string[]; specializations: string[] }> = {
   Singapore: {
@@ -53,19 +56,20 @@ function generateCountryQueries(country: string): string[] {
   if (!context) return [];
 
   const queries: string[] = [];
+  const primaryAgency = context.agencies[0];
+  const agencyMention = context.agencies.slice(0, 2).join(' OR ');
 
   // Domain-specific queries with country context
   for (const domain of POLICY_DOMAINS) {
-    const agencyMention = context.agencies.slice(0, 2).join(' OR ');
     queries.push(
-      `${country} government policy "${domain}" program initiative ${context.agencies[0]} 2023 2024`
+      `${country} government policy "${domain}" program initiative (${agencyMention}) ${RECENT_YEARS}`
     );
   }
 
   // Country specialization queries
   for (const specialization of context.specializations.slice(0, 2)) {
     queries.push(
-      `${country} ${specialization} government incentive policy program support scheme`
+      `${country} ${specialization} government incentive policy program ${primaryAgency} ${RECENT_YEARS}`
     );
   }
 

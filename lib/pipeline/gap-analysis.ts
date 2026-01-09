@@ -6,6 +6,7 @@ import {
   IrelandStatus,
   OpportunityValue,
 } from '../types';
+import { extractCitationClaims } from './evidence-utils';
 
 // Irish domains to identify
 const IRISH_DOMAINS = [
@@ -39,62 +40,66 @@ function determineIrelandStatus(
   content: string,
   citations: { url: string; title?: string }[]
 ): { status: IrelandStatus; notes: string } {
-  const lowerContent = content.toLowerCase();
+  const extractReasoning = (text: string): string | null => {
+    const match = text.match(/Reasoning\s*:\s*([\s\S]*)/i);
+    if (!match) return null;
+    const firstLine = match[1].split('\n').map((line) => line.trim()).find(Boolean);
+    return firstLine ? firstLine.slice(0, 300) : null;
+  };
 
-  // Check for existence indicators
-  const existsPatterns = [
-    /ireland(?:'s| has| already| currently| operates| runs| offers)/i,
-    /irish government(?:'s| has| introduced| launched| operates)/i,
-    /enterprise ireland(?:'s| offers| provides| runs)/i,
-    /ida ireland(?:'s| offers| provides)/i,
-  ];
+  const parseClassification = (text: string): IrelandStatus | null => {
+    const labeledMatch = text.match(/(?:classification|status)\s*[:\-]\s*([A-Z_\s]+)/i);
+    const rawLabel = labeledMatch ? labeledMatch[1] : null;
 
-  for (const pattern of existsPatterns) {
-    if (pattern.test(content)) {
-      return {
-        status: 'exists',
-        notes: 'Similar policy or mechanism appears to exist in Ireland.',
-      };
+    const normalize = (value: string): string =>
+      value.toLowerCase().replace(/[\s_-]+/g, ' ').trim();
+
+    if (rawLabel) {
+      const normalized = normalize(rawLabel);
+      if (normalized.includes('discussed') || normalized.includes('rejected')) {
+        return 'discussed_rejected';
+      }
+      if (normalized.includes('exists')) return 'exists';
+      if (normalized.includes('absent')) return 'absent';
     }
-  }
 
-  // Check for discussed/rejected indicators
-  const rejectedPatterns = [
-    /ireland.{0,50}(?:rejected|declined|considered but|not adopted|chose not)/i,
-    /(?:proposed|suggested).{0,50}ireland.{0,50}(?:not|never)/i,
-    /ireland.{0,50}(?:debated|discussed).{0,50}(?:not|never|failed)/i,
-  ];
+    const fallbackMatch = text.match(/^(exists|absent|discussed(?:\s+but\s+rejected)?)/im);
+    if (!fallbackMatch) return null;
 
-  for (const pattern of rejectedPatterns) {
-    if (pattern.test(content)) {
-      return {
-        status: 'discussed_rejected',
-        notes: 'This policy concept has been discussed in Ireland but not adopted.',
-      };
-    }
-  }
+    const fallbackLabel = normalize(fallbackMatch[1]);
+    if (fallbackLabel.startsWith('discussed')) return 'discussed_rejected';
+    if (fallbackLabel.startsWith('exists')) return 'exists';
+    if (fallbackLabel.startsWith('absent')) return 'absent';
+    return null;
+  };
 
-  // Check if we found any Irish sources at all
-  const irishCitations = citations.filter((c) => isIrishDomain(c.url));
-
-  if (irishCitations.length === 0) {
+  const explicitStatus = parseClassification(content);
+  if (explicitStatus) {
+    const reasoning = extractReasoning(content);
+    const defaultNotes =
+      explicitStatus === 'exists'
+        ? 'This policy appears to exist in Ireland based on Irish sources.'
+        : explicitStatus === 'discussed_rejected'
+          ? 'This policy appears to have been discussed in Ireland but not adopted.'
+          : 'No evidence of this policy concept in Irish policy discourse.';
     return {
-      status: 'absent',
-      notes: 'No evidence of this policy concept in Irish policy discourse.',
+      status: explicitStatus,
+      notes: reasoning || defaultNotes,
     };
   }
 
-  // Found Irish sources but no clear status
-  if (lowerContent.includes('ireland') || lowerContent.includes('irish')) {
+  // Fallback: rely on Irish citation presence without inferring adoption.
+  const irishCitations = citations.filter((c) => isIrishDomain(c.url));
+  if (irishCitations.length === 0) {
     return {
-      status: 'discussed_rejected',
-      notes: 'Some discussion found in Irish sources but no clear adoption.',
+      status: 'absent',
+      notes: 'No Irish sources found for this policy concept.',
     };
   }
 
   return {
-    status: 'absent',
-    notes: 'This policy concept does not appear in Irish policy discourse.',
+    status: 'discussed_rejected',
+    notes: 'Irish sources mention the topic but no explicit adoption was classified.',
   };
 }
 
@@ -132,17 +137,28 @@ export async function gapAnalysis(policies: VettedPolicy[]): Promise<AnalyzedPol
   console.log(`[GapAnalysis] Starting Ireland gap analysis for ${policies.length} policies`);
 
   const analyzedPolicies: AnalyzedPolicy[] = [];
+  const BATCH_SIZE = 3;
+  const BATCH_DELAY_MS = 200;
 
-  for (const policy of policies) {
+  const delay = (ms: number): Promise<void> =>
+    new Promise(resolve => setTimeout(resolve, ms));
+
+  const analyzePolicy = async (policy: VettedPolicy): Promise<AnalyzedPolicy> => {
     console.log(`[GapAnalysis] Analyzing: ${policy.name}`);
 
     try {
       // Search Irish sources
       const irishResult = await searchIrishSources(policy.name, policy.category);
+      const { claimByCitation, fallbackClaim } = extractCitationClaims(
+        irishResult.content,
+        policy.name
+      );
 
       // Extract Irish-specific evidence
-      const irelandEvidence: Evidence[] = irishResult.citations.map((citation) => {
+      const irelandEvidence: Evidence[] = irishResult.citations.map((citation, index) => {
         const irelandDomain = isIrishDomain(citation.url);
+        const claimFromContent = claimByCitation.get(index + 1);
+        const claim = (claimFromContent || fallbackClaim).slice(0, 500);
         return {
           id: crypto.randomUUID(),
           policyId: '',
@@ -153,7 +169,7 @@ export async function gapAnalysis(policies: VettedPolicy[]): Promise<AnalyzedPol
             : 'news' as const,
           publicationDate: null,
           evidenceType: 'adoption_rate' as const,
-          claim: irishResult.content.slice(0, 500),
+          claim,
           excerpt: null,
           sentiment: 'neutral' as const,
           confidence: 0.7,
@@ -176,27 +192,36 @@ export async function gapAnalysis(policies: VettedPolicy[]): Promise<AnalyzedPol
         policy.criticismScore
       );
 
-      analyzedPolicies.push({
+      console.log(
+        `[GapAnalysis] ${policy.name}: status=${irelandStatus}, opportunity=${opportunityValue}`
+      );
+      return {
         ...policy,
         irelandStatus,
         irelandNotes,
         irelandEvidence,
         opportunityValue,
-      });
-
-      console.log(
-        `[GapAnalysis] ${policy.name}: status=${irelandStatus}, opportunity=${opportunityValue}`
-      );
+      };
     } catch (error) {
       console.error(`[GapAnalysis] Error analyzing ${policy.name}:`, error);
       // Include with pending status
-      analyzedPolicies.push({
+      return {
         ...policy,
         irelandStatus: 'pending',
         irelandNotes: 'Gap analysis failed - manual review required',
         irelandEvidence: [],
         opportunityValue: null,
-      });
+      };
+    }
+  };
+
+  for (let i = 0; i < policies.length; i += BATCH_SIZE) {
+    const batch = policies.slice(i, i + BATCH_SIZE);
+    const batchResults = await Promise.all(batch.map(policy => analyzePolicy(policy)));
+    analyzedPolicies.push(...batchResults);
+
+    if (i + BATCH_SIZE < policies.length) {
+      await delay(BATCH_DELAY_MS);
     }
   }
 

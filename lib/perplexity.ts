@@ -180,7 +180,11 @@ export async function searchSuccessEvidence(
     query: `"${policyName}" ${country} success results metrics impact statistics adoption rate evaluation`,
     systemPrompt: `Find quantitative evidence of success for the policy "${policyName}" in ${country}.
 Look for: adoption rates, economic impact metrics, number of beneficiaries, growth statistics,
-independent evaluations. Always cite specific numbers with their sources. Be factual and objective.`,
+independent evaluations. Always cite specific numbers with their sources. Be factual and objective.
+Return 3-6 bullet points. Each bullet must be a single claim sentence with citation markers [n],
+followed by "Strength: X/10" using this rubric:
+1-2 anecdotal or unverified, 3-4 qualitative without data, 5-6 single-source quantitative metric,
+7-8 multiple sources or official evaluation with metrics, 9-10 rigorous or peer-reviewed causal evidence.`,
   });
 }
 
@@ -193,8 +197,39 @@ export async function searchCriticisms(
     query: `"${policyName}" ${country} criticism failure problems limitations "unintended consequences" evaluation negative`,
     systemPrompt: `Find criticisms, failures, or unintended consequences of the policy "${policyName}" in ${country}.
 Be thorough in finding opposing viewpoints. Include academic critiques, media criticism, policy
-evaluations that identify problems. This is an adversarial check - we need to know the downsides.`,
+evaluations that identify problems. This is an adversarial check - we need to know the downsides.
+Return 3-6 bullet points. Each bullet must be a single claim sentence with citation markers [n],
+followed by "Strength: X/10" using this rubric:
+1-2 anecdotal or unverified, 3-4 qualitative without data, 5-6 single-source quantitative metric,
+7-8 multiple sources or official evaluation with metrics, 9-10 rigorous or peer-reviewed causal evidence.`,
   });
+}
+
+const IRISH_SOURCE_DOMAINS = [
+  'gov.ie',
+  'oireachtas.ie',
+  'enterprise.gov.ie',
+  'irishtimes.com',
+  'siliconrepublic.com',
+  'dbei.gov.ie',
+  'rte.ie',
+  'independent.ie',
+  'businesspost.ie',
+  'thejournal.ie',
+];
+
+function getIrishDomain(url: string): string | null {
+  try {
+    const hostname = new URL(url).hostname.toLowerCase();
+    for (const domain of IRISH_SOURCE_DOMAINS) {
+      if (hostname.includes(domain)) {
+        return domain;
+      }
+    }
+  } catch {
+    return null;
+  }
+  return null;
 }
 
 // Search Irish sources specifically
@@ -202,13 +237,27 @@ export async function searchIrishSources(
   policyName: string,
   category: string
 ): Promise<PerplexityResponse> {
-  return perplexitySearchWithRetry({
-    query: `site:gov.ie OR site:oireachtas.ie OR site:enterprise.gov.ie OR site:irishtimes.com OR site:siliconrepublic.com "${policyName}" OR "${category}" Ireland policy`,
-    systemPrompt: `Search Irish legislative and government sources for evidence of the policy "${policyName}"
+  const result = await perplexitySearchWithRetry({
+    query: `"${policyName}" OR "${category}" Ireland policy government program legislation`,
+    systemPrompt: `Search exclusively Irish government and Irish news sources for evidence of the policy "${policyName}"
 or similar policies in the category "${category}". Determine if:
 1. This policy already exists in Ireland (provide details)
 2. It was discussed but rejected (explain why)
 3. It appears absent from Irish policy discourse
-Be specific about what you find or don't find.`,
+Focus exclusively on sources from: gov.ie, oireachtas.ie, enterprise.gov.ie, irishtimes.com, siliconrepublic.com,
+dbei.gov.ie, rte.ie, independent.ie, businesspost.ie, thejournal.ie. If you cannot find sources there,
+say so explicitly and do not infer.
+Return a short answer in this format:
+Classification: EXISTS | DISCUSSED_BUT_REJECTED | ABSENT
+Reasoning: <1-3 sentences>`,
   });
+
+  const irishCitations = result.citations.filter((citation) =>
+    getIrishDomain(citation.url)
+  );
+
+  return {
+    ...result,
+    citations: irishCitations,
+  };
 }
