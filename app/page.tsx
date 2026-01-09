@@ -1,65 +1,145 @@
-import Image from "next/image";
+import Link from 'next/link';
+import { TopOpportunities } from '@/components/dashboard/TopOpportunities';
+import { getHighValuePolicies, getRecentRuns, getPolicies } from '@/lib/db';
 
-export default function Home() {
+export const dynamic = 'force-dynamic';
+
+async function getDashboardData() {
+  try {
+    const [topPolicies, recentRuns, allPolicies] = await Promise.all([
+      getHighValuePolicies(3),
+      getRecentRuns(5),
+      getPolicies({ status: 'active', limit: 100 }),
+    ]);
+
+    return {
+      topPolicies,
+      recentRuns,
+      stats: {
+        totalPolicies: allPolicies.length,
+        highValue: allPolicies.filter((p) => p.opportunityValue === 'high').length,
+        countries: [...new Set(allPolicies.map((p) => p.sourceCountry))].length,
+      },
+    };
+  } catch (error) {
+    console.error('Failed to load dashboard data:', error);
+    return {
+      topPolicies: [],
+      recentRuns: [],
+      stats: { totalPolicies: 0, highValue: 0, countries: 0 },
+    };
+  }
+}
+
+export default async function DashboardPage() {
+  const { topPolicies, recentRuns, stats } = await getDashboardData();
+
   return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex min-h-screen w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
+    <div className="space-y-12">
+      {/* Header */}
+      <header className="border-b border-[var(--border)] pb-8">
+        <h1 className="text-2xl font-semibold text-[var(--text-primary)] mb-2">
+          Policy Innovation Dashboard
+        </h1>
+        <p className="text-[var(--text-secondary)] mb-6">
+          Discover innovation policies from peer economies that Ireland could adopt
+        </p>
+        <Link href="/research" className="btn btn-primary">
+          Start New Research
+        </Link>
+      </header>
+
+      {/* Stats */}
+      <section className="grid grid-cols-3 gap-6">
+        <div className="border-l-2 border-[var(--border)] pl-4">
+          <p className="text-3xl font-semibold text-[var(--text-primary)]">
+            {stats.highValue}
           </p>
+          <p className="text-sm text-[var(--text-muted)] mt-1">High-Value Opportunities</p>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+
+        <div className="border-l-2 border-[var(--border)] pl-4">
+          <p className="text-3xl font-semibold text-[var(--text-primary)]">
+            {stats.countries}
+          </p>
+          <p className="text-sm text-[var(--text-muted)] mt-1">Countries Analyzed</p>
         </div>
-      </main>
+
+        <div className="border-l-2 border-[var(--border)] pl-4">
+          <p className="text-3xl font-semibold text-[var(--text-primary)]">
+            {stats.totalPolicies}
+          </p>
+          <p className="text-sm text-[var(--text-muted)] mt-1">Policies Discovered</p>
+        </div>
+      </section>
+
+      {/* Top Opportunities */}
+      <TopOpportunities policies={topPolicies} />
+
+      {/* Recent Runs */}
+      {recentRuns.length > 0 && (
+        <section className="space-y-4">
+          <h2 className="section-title">Recent Research Runs</h2>
+          <div className="divide-y divide-[var(--border)]">
+            {recentRuns.map((run) => (
+              <div key={run.id} className="py-4 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div
+                    className={`w-2 h-2 rounded-full ${
+                      run.status === 'completed'
+                        ? 'bg-[var(--success)]'
+                        : run.status === 'running'
+                        ? 'bg-[var(--accent)]'
+                        : run.status === 'failed'
+                        ? 'bg-[var(--error)]'
+                        : 'bg-[var(--text-muted)]'
+                    }`}
+                  />
+                  <div>
+                    <p className="text-sm text-[var(--text-primary)]">
+                      {run.type === 'discovery' ? 'Discovery Scan' : 'Targeted Research'}
+                      {run.countries && ` — ${run.countries.join(', ')}`}
+                    </p>
+                    <p className="text-xs text-[var(--text-muted)]">
+                      {new Date(run.createdAt).toLocaleDateString('en-IE', {
+                        day: 'numeric',
+                        month: 'short',
+                        year: 'numeric',
+                      })}
+                    </p>
+                  </div>
+                </div>
+                <div className="text-right">
+                  <p className="text-sm text-[var(--text-secondary)]">
+                    {run.policiesFound} policies
+                  </p>
+                  {run.highValueCount > 0 && (
+                    <p className="text-xs text-[var(--success)]">
+                      {run.highValueCount} high-value
+                    </p>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* Empty state */}
+      {topPolicies.length === 0 && recentRuns.length === 0 && (
+        <section className="py-16 text-center border border-[var(--border)]">
+          <h3 className="text-lg font-semibold text-[var(--text-primary)] mb-2">
+            No research data yet
+          </h3>
+          <p className="text-[var(--text-muted)] mb-6 max-w-md mx-auto">
+            Start by running your first research cycle. Select countries to analyze
+            and discover high-value innovation policies.
+          </p>
+          <Link href="/research" className="btn btn-primary">
+            Start Research
+          </Link>
+        </section>
+      )}
     </div>
   );
 }
