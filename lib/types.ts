@@ -12,6 +12,14 @@ export type EvidenceType = 'success_metric' | 'criticism' | 'unintended_conseque
 export type SourceType = 'oecd_report' | 'news' | 'gov_doc' | 'academic' | 'blog' | 'think_tank';
 export type Sentiment = 'positive' | 'negative' | 'neutral';
 
+// Search modes for research
+export type SearchMode = 'broad' | 'topic' | 'reverse';
+
+export interface ResearchOptions {
+  searchMode: SearchMode;
+  searchQuery?: string;
+}
+
 // Countries available for research
 export const PEER_COUNTRIES = [
   'Singapore',
@@ -33,6 +41,8 @@ export interface RunRow {
   status: RunStatus;
   phase: Phase | null;
   countries: string[] | null;
+  search_mode: SearchMode | null;
+  search_query: string | null;
   started_at: string | null;
   completed_at: string | null;
   policies_found: number;
@@ -92,6 +102,8 @@ export interface Run {
   status: RunStatus;
   phase: Phase | null;
   countries: string[] | null;
+  searchMode: SearchMode | null;
+  searchQuery: string | null;
   startedAt: string | null;
   completedAt: string | null;
   policiesFound: number;
@@ -211,6 +223,8 @@ export function runRowToRun(row: RunRow): Run {
     status: row.status,
     phase: row.phase,
     countries: row.countries,
+    searchMode: row.search_mode,
+    searchQuery: row.search_query,
     startedAt: row.started_at,
     completedAt: row.completed_at,
     policiesFound: row.policies_found,

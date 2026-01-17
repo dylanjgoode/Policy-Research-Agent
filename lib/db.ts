@@ -11,6 +11,7 @@ import {
   evidenceRowToEvidence,
   RunStatus,
   Phase,
+  SearchMode,
 } from './types';
 
 // Singleton Supabase client
@@ -38,13 +39,20 @@ export const supabase = {
 
 // ============ Runs ============
 
-export async function createRun(type: 'manual' | 'discovery', countries?: string[]): Promise<Run> {
+export async function createRun(
+  type: 'manual' | 'discovery',
+  countries?: string[],
+  searchMode?: SearchMode,
+  searchQuery?: string
+): Promise<Run> {
   const { data, error } = await getSupabase()
     .from('runs')
     .insert({
       type,
       status: 'running' as RunStatus,
       countries: countries || null,
+      search_mode: searchMode || null,
+      search_query: searchQuery || null,
       started_at: new Date().toISOString(),
     })
     .select()
@@ -248,6 +256,52 @@ export async function getHighValuePolicies(limit = 3): Promise<Policy[]> {
     opportunityValue: 'high',
     limit,
   });
+}
+
+// ============ Transactional Operations ============
+
+export interface CreatePolicyWithEvidenceInput {
+  policy: Partial<PolicyRow>;
+  evidence: Partial<EvidenceRow>[];
+}
+
+export async function createPolicyWithEvidence(
+  input: CreatePolicyWithEvidenceInput
+): Promise<Policy> {
+  const slug = generateSlug(input.policy.name || 'policy');
+
+  // Prepare policy data with slug
+  const policyData = {
+    ...input.policy,
+    slug,
+  };
+
+  // Prepare evidence data
+  const evidenceData = input.evidence.map((e) => ({
+    url: e.url,
+    title: e.title,
+    source_type: e.source_type,
+    publication_date: e.publication_date,
+    evidence_type: e.evidence_type,
+    claim: e.claim,
+    excerpt: e.excerpt,
+    sentiment: e.sentiment,
+    confidence: e.confidence,
+    is_ireland_source: e.is_ireland_source || false,
+    ireland_domain: e.ireland_domain,
+  }));
+
+  const { data, error } = await getSupabase().rpc('create_policy_with_evidence', {
+    policy_data: policyData,
+    evidence_data: evidenceData,
+  });
+
+  if (error) {
+    throw new Error(`Failed to create policy with evidence: ${error.message}`);
+  }
+
+  // The RPC returns JSONB, convert to Policy
+  return policyRowToPolicy(data as PolicyRow);
 }
 
 // ============ Evidence ============

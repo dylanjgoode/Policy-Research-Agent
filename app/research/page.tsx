@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Loader2 } from 'lucide-react';
 import { CountrySelector } from '@/components/dashboard/CountrySelector';
+import type { SearchMode } from '@/lib/types';
 
 type RunStatus = 'idle' | 'running' | 'completed' | 'failed';
 
@@ -17,6 +18,8 @@ interface RunResult {
 export default function ResearchPage() {
   const router = useRouter();
   const [selectedCountries, setSelectedCountries] = useState<string[]>([]);
+  const [searchMode, setSearchMode] = useState<SearchMode>('broad');
+  const [searchQuery, setSearchQuery] = useState('');
   const [status, setStatus] = useState<RunStatus>('idle');
   const [result, setResult] = useState<RunResult | null>(null);
   const [currentPhase, setCurrentPhase] = useState<string>('');
@@ -28,8 +31,12 @@ export default function ResearchPage() {
     { id: 'report_generation', label: 'Report Generation', description: 'Creating briefs' },
   ];
 
+  const canStartResearch =
+    selectedCountries.length > 0 &&
+    (searchMode === 'broad' || searchQuery.trim().length > 0);
+
   const startResearch = async () => {
-    if (selectedCountries.length === 0) return;
+    if (!canStartResearch) return;
 
     setStatus('running');
     setResult(null);
@@ -49,7 +56,11 @@ export default function ResearchPage() {
       const response = await fetch('/api/research', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ countries: selectedCountries }),
+        body: JSON.stringify({
+          countries: selectedCountries,
+          searchMode,
+          searchQuery: searchMode !== 'broad' ? searchQuery.trim() : undefined,
+        }),
       });
 
       clearInterval(phaseInterval);
@@ -99,9 +110,93 @@ export default function ResearchPage() {
         </p>
       </header>
 
-      {/* Country Selection */}
+      {/* Search Mode & Country Selection */}
       {status === 'idle' && (
-        <section className="space-y-6">
+        <section className="space-y-8">
+          {/* Search Mode */}
+          <div className="space-y-4">
+            <label className="text-sm text-[var(--text-secondary)]">
+              How do you want to search?
+            </label>
+            <div className="space-y-3">
+              <label className="flex items-start gap-3 p-3 border border-[var(--border)] cursor-pointer hover:border-[var(--border-hover)] has-[:checked]:border-[var(--accent)] has-[:checked]:bg-[var(--accent-muted)]">
+                <input
+                  type="radio"
+                  name="searchMode"
+                  value="broad"
+                  checked={searchMode === 'broad'}
+                  onChange={() => setSearchMode('broad')}
+                  className="mt-0.5"
+                />
+                <div>
+                  <p className="text-sm text-[var(--text-primary)] font-medium">
+                    Broad search
+                  </p>
+                  <p className="text-xs text-[var(--text-muted)]">
+                    Search all policy areas (R&D, startups, talent visas, etc.)
+                  </p>
+                </div>
+              </label>
+
+              <label className="flex items-start gap-3 p-3 border border-[var(--border)] cursor-pointer hover:border-[var(--border-hover)] has-[:checked]:border-[var(--accent)] has-[:checked]:bg-[var(--accent-muted)]">
+                <input
+                  type="radio"
+                  name="searchMode"
+                  value="topic"
+                  checked={searchMode === 'topic'}
+                  onChange={() => setSearchMode('topic')}
+                  className="mt-0.5"
+                />
+                <div className="flex-1">
+                  <p className="text-sm text-[var(--text-primary)] font-medium">
+                    Specific topic
+                  </p>
+                  <p className="text-xs text-[var(--text-muted)] mb-2">
+                    Search for policies in a specific area
+                  </p>
+                  {searchMode === 'topic' && (
+                    <input
+                      type="text"
+                      placeholder="e.g., housing affordability, AI regulation"
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className="w-full px-3 py-2 text-sm bg-[var(--bg-primary)] border border-[var(--border)] placeholder:text-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)]"
+                    />
+                  )}
+                </div>
+              </label>
+
+              <label className="flex items-start gap-3 p-3 border border-[var(--border)] cursor-pointer hover:border-[var(--border-hover)] has-[:checked]:border-[var(--accent)] has-[:checked]:bg-[var(--accent-muted)]">
+                <input
+                  type="radio"
+                  name="searchMode"
+                  value="reverse"
+                  checked={searchMode === 'reverse'}
+                  onChange={() => setSearchMode('reverse')}
+                  className="mt-0.5"
+                />
+                <div className="flex-1">
+                  <p className="text-sm text-[var(--text-primary)] font-medium">
+                    Reverse lookup
+                  </p>
+                  <p className="text-xs text-[var(--text-muted)] mb-2">
+                    Has this policy been used elsewhere?
+                  </p>
+                  {searchMode === 'reverse' && (
+                    <input
+                      type="text"
+                      placeholder="e.g., R&D tax credit, tech visa program"
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className="w-full px-3 py-2 text-sm bg-[var(--bg-primary)] border border-[var(--border)] placeholder:text-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)]"
+                    />
+                  )}
+                </div>
+              </label>
+            </div>
+          </div>
+
+          {/* Country Selector */}
           <CountrySelector
             selectedCountries={selectedCountries}
             onSelectionChange={setSelectedCountries}
@@ -110,14 +205,16 @@ export default function ResearchPage() {
           <div className="pt-6 border-t border-[var(--border)]">
             <button
               onClick={startResearch}
-              disabled={selectedCountries.length === 0}
+              disabled={!canStartResearch}
               className="btn btn-primary w-full"
             >
               Start Research ({selectedCountries.length} {selectedCountries.length === 1 ? 'country' : 'countries'})
             </button>
-            {selectedCountries.length === 0 && (
+            {!canStartResearch && (
               <p className="text-xs text-[var(--text-muted)] text-center mt-3">
-                Select at least one country to begin
+                {selectedCountries.length === 0
+                  ? 'Select at least one country to begin'
+                  : 'Enter a search query for this mode'}
               </p>
             )}
           </div>
@@ -207,6 +304,8 @@ export default function ResearchPage() {
                 setStatus('idle');
                 setResult(null);
                 setSelectedCountries([]);
+                setSearchMode('broad');
+                setSearchQuery('');
               }}
               className="btn btn-secondary"
             >

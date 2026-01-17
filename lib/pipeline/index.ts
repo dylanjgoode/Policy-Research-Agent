@@ -8,7 +8,7 @@ import {
   updateRunStatus,
   updateRunCounts,
 } from '../db';
-import type { Policy, Run } from '../types';
+import type { Policy, Run, ResearchOptions } from '../types';
 
 export interface PipelineResult {
   run: Run;
@@ -20,17 +20,26 @@ export interface PipelineResult {
 /**
  * Run the full research pipeline for specified countries
  */
-export async function runResearchPipeline(countries: string[]): Promise<PipelineResult> {
-  console.log(`[Pipeline] Starting research for countries: ${countries.join(', ')}`);
+export async function runResearchPipeline(
+  countries: string[],
+  options?: ResearchOptions
+): Promise<PipelineResult> {
+  const searchMode = options?.searchMode || 'broad';
+  const searchQuery = options?.searchQuery;
+
+  console.log(`[Pipeline] Starting research for countries: ${countries.join(', ')} (mode: ${searchMode})`);
+  if (searchQuery) {
+    console.log(`[Pipeline] Search query: "${searchQuery}"`);
+  }
 
   // Create run record
-  const run = await createRun('manual', countries);
+  const run = await createRun('manual', countries, searchMode, searchQuery);
 
   try {
     // Phase 1: Signal Hunter
     console.log('[Pipeline] Phase 1: Signal Hunter');
     await updateRunPhase(run.id, 'signal_hunter');
-    const signals = await signalHunter(countries);
+    const signals = await signalHunter(countries, { searchMode, searchQuery });
 
     if (signals.length === 0) {
       await updateRunStatus(run.id, 'completed');

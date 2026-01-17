@@ -1,5 +1,10 @@
 import { perplexitySearchWithRetry } from '../perplexity';
-import { PolicySignal, PeerCountry, PerplexityCitation } from '../types';
+import { PolicySignal, PeerCountry, PerplexityCitation, SearchMode } from '../types';
+
+export interface SignalHunterOptions {
+  searchMode?: SearchMode;
+  searchQuery?: string;
+}
 
 // Policy domains to search across all countries
 const POLICY_DOMAINS = [
@@ -128,29 +133,87 @@ ${content}`,
   }
 }
 
-export async function signalHunter(countries: string[]): Promise<PolicySignal[]> {
-  console.log(`[SignalHunter] Starting scan for countries: ${countries.join(', ')}`);
+// Generate queries based on search mode
+function generateQueriesForMode(
+  country: string,
+  options?: SignalHunterOptions
+): { queries: string[]; systemPrompt: string } {
+  const searchMode = options?.searchMode || 'broad';
+  const searchQuery = options?.searchQuery || '';
+  const context = COUNTRY_CONTEXT[country];
+  const agencyMention = context?.agencies?.slice(0, 2).join(' OR ') || '';
+
+  switch (searchMode) {
+    case 'topic':
+      // Single focused query for the user's specific topic
+      return {
+        queries: [
+          `"${searchQuery}" policy program ${country} government ${agencyMention} ${RECENT_YEARS}`,
+        ],
+        systemPrompt: `You are a policy research analyst. Search for specific government policies and programs
+related to "${searchQuery}" from ${country}. Focus on:
+1. Named programs and initiatives (not vague concepts)
+2. Government policies, legislation, or incentive schemes
+3. Measurable outcomes and success metrics
+Include program names, key features, and any available metrics. Be factual and cite sources.`,
+      };
+
+    case 'reverse':
+      // Find implementations of a specific policy in this country
+      return {
+        queries: [
+          `"${searchQuery}" ${country} implementation adoption results government program`,
+        ],
+        systemPrompt: `You are a policy research analyst. Search for whether ${country} has implemented
+a policy similar to "${searchQuery}". Focus on:
+1. Has this country adopted a similar program? What is it called locally?
+2. What were the results and outcomes?
+3. Any variations or adaptations made?
+4. Criticism or challenges faced
+Be factual and cite sources.`,
+      };
+
+    case 'broad':
+    default:
+      // Original behavior: domain + specialization queries
+      return {
+        queries: COUNTRY_QUERIES[country] || [],
+        systemPrompt: `You are a policy research analyst. Search for specific innovation policy mechanisms,
+legislative tools, or government programs from ${country}. Focus on quantifiable programs with
+clear names (e.g., "R&D Tax Super-deduction", "Startup Visa Program", "Innovation Fund Grant").
+Include program names, key features, and any available metrics. Be factual and cite sources.`,
+      };
+  }
+}
+
+export async function signalHunter(
+  countries: string[],
+  options?: SignalHunterOptions
+): Promise<PolicySignal[]> {
+  const searchMode = options?.searchMode || 'broad';
+  console.log(`[SignalHunter] Starting scan (mode: ${searchMode}) for countries: ${countries.join(', ')}`);
+  if (options?.searchQuery) {
+    console.log(`[SignalHunter] Search query: "${options.searchQuery}"`);
+  }
 
   const allPolicies: PolicySignal[] = [];
   const seenPolicies = new Set<string>();
 
   for (const country of countries) {
-    const queries = COUNTRY_QUERIES[country];
-    if (!queries) {
-      console.warn(`[SignalHunter] No queries defined for country: ${country}`);
+    const { queries, systemPrompt } = generateQueriesForMode(country, options);
+
+    if (queries.length === 0) {
+      console.warn(`[SignalHunter] No queries generated for country: ${country}`);
       continue;
     }
 
-    console.log(`[SignalHunter] Scanning ${country}...`);
+    console.log(`[SignalHunter] Scanning ${country} with ${queries.length} queries...`);
 
     for (const query of queries) {
       try {
         const result = await perplexitySearchWithRetry({
           query,
-          systemPrompt: `You are a policy research analyst. Search for specific innovation policy mechanisms,
-legislative tools, or government programs from ${country}. Focus on quantifiable programs with
-clear names (e.g., "R&D Tax Super-deduction", "Startup Visa Program", "Innovation Fund Grant").
-Include program names, key features, and any available metrics. Be factual and cite sources.`,
+          systemPrompt,
         });
 
         const policies = await extractPoliciesFromResponse(

@@ -3,9 +3,8 @@ import {
   AnalyzedPolicy,
   Policy,
   RiskAssessment,
-  Evidence,
 } from '../types';
-import { createPolicy, updatePolicy, createManyEvidence } from '../db';
+import { createPolicyWithEvidence } from '../db';
 
 async function generateConceptHook(policy: AnalyzedPolicy): Promise<string> {
   try {
@@ -141,53 +140,49 @@ export async function generateReports(policies: AnalyzedPolicy[]): Promise<Polic
       const gapStatement = generateGapStatement(policy);
       const riskAssessment = generateRiskAssessment(policy);
 
-      // Create policy in database
-      const savedPolicy = await createPolicy({
-        name: policy.name,
-        category: policy.category,
-        source_country: policy.sourceCountry,
-        original_source_url: policy.sourceUrl,
-        original_source_title: policy.sourceTitle,
-        discovery_context: policy.description,
-        vetting_status: 'vetted',
-        success_score: policy.successScore,
-        criticism_score: policy.criticismScore,
-        ireland_status: policy.irelandStatus,
-        ireland_notes: policy.irelandNotes,
-        opportunity_value: policy.opportunityValue,
-        concept_hook: conceptHook,
-        case_study_summary: caseStudySummary,
-        gap_statement: gapStatement,
-        pilot_proposal: pilotProposal,
-        risk_assessment: riskAssessment,
-        status: policy.opportunityValue === 'high' ? 'active' : 'draft',
+      // Prepare all evidence items
+      const allEvidence = [
+        ...policy.successEvidence,
+        ...policy.criticismEvidence,
+        ...policy.irelandEvidence,
+      ].map((e) => ({
+        url: e.url!,
+        title: e.title,
+        source_type: e.sourceType!,
+        publication_date: e.publicationDate,
+        evidence_type: e.evidenceType!,
+        claim: e.claim!,
+        excerpt: e.excerpt,
+        sentiment: e.sentiment,
+        confidence: e.confidence,
+        is_ireland_source: e.isIrelandSource || false,
+        ireland_domain: e.irelandDomain,
+      }));
+
+      // Create policy and evidence atomically (single transaction)
+      const savedPolicy = await createPolicyWithEvidence({
+        policy: {
+          name: policy.name,
+          category: policy.category,
+          source_country: policy.sourceCountry,
+          original_source_url: policy.sourceUrl,
+          original_source_title: policy.sourceTitle,
+          discovery_context: policy.description,
+          vetting_status: 'vetted',
+          success_score: policy.successScore,
+          criticism_score: policy.criticismScore,
+          ireland_status: policy.irelandStatus,
+          ireland_notes: policy.irelandNotes,
+          opportunity_value: policy.opportunityValue,
+          concept_hook: conceptHook,
+          case_study_summary: caseStudySummary,
+          gap_statement: gapStatement,
+          pilot_proposal: pilotProposal,
+          risk_assessment: riskAssessment,
+          status: policy.opportunityValue === 'high' ? 'active' : 'draft',
+        },
+        evidence: allEvidence,
       });
-
-      // Save all evidence
-      const allEvidence: Partial<Evidence>[] = [
-        ...policy.successEvidence.map((e) => ({ ...e, policyId: savedPolicy.id })),
-        ...policy.criticismEvidence.map((e) => ({ ...e, policyId: savedPolicy.id })),
-        ...policy.irelandEvidence.map((e) => ({ ...e, policyId: savedPolicy.id })),
-      ];
-
-      if (allEvidence.length > 0) {
-        await createManyEvidence(
-          allEvidence.map((e) => ({
-            policy_id: savedPolicy.id,
-            url: e.url!,
-            title: e.title,
-            source_type: e.sourceType!,
-            publication_date: e.publicationDate,
-            evidence_type: e.evidenceType!,
-            claim: e.claim!,
-            excerpt: e.excerpt,
-            sentiment: e.sentiment,
-            confidence: e.confidence,
-            is_ireland_source: e.isIrelandSource || false,
-            ireland_domain: e.irelandDomain,
-          }))
-        );
-      }
 
       finalPolicies.push(savedPolicy);
       console.log(`[ReportGenerator] Saved: ${savedPolicy.name} (${savedPolicy.slug})`);

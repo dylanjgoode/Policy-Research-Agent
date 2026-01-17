@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { runResearchPipeline } from '@/lib/pipeline';
 import { getActiveRun, getRecentRuns } from '@/lib/db';
-import { PEER_COUNTRIES } from '@/lib/types';
+import { PEER_COUNTRIES, type SearchMode } from '@/lib/types';
+
+const VALID_SEARCH_MODES: SearchMode[] = ['broad', 'topic', 'reverse'];
 
 // GET /api/research - Get recent runs and status
 export async function GET() {
@@ -29,7 +31,7 @@ export async function GET() {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { countries } = body;
+    const { countries, searchMode = 'broad', searchQuery } = body;
 
     // Validate countries
     if (!countries || !Array.isArray(countries) || countries.length === 0) {
@@ -51,6 +53,22 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Validate search mode
+    if (!VALID_SEARCH_MODES.includes(searchMode)) {
+      return NextResponse.json(
+        { error: 'Invalid search mode', validModes: VALID_SEARCH_MODES },
+        { status: 400 }
+      );
+    }
+
+    // Validate search query for topic and reverse modes
+    if ((searchMode === 'topic' || searchMode === 'reverse') && !searchQuery?.trim()) {
+      return NextResponse.json(
+        { error: 'Search query is required for topic and reverse lookup modes' },
+        { status: 400 }
+      );
+    }
+
     // Check for active run
     const activeRun = await getActiveRun();
     if (activeRun) {
@@ -60,8 +78,11 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Start pipeline (non-blocking for initial response)
-    const pipelinePromise = runResearchPipeline(validCountries);
+    // Start pipeline
+    const pipelinePromise = runResearchPipeline(validCountries, {
+      searchMode,
+      searchQuery: searchQuery?.trim(),
+    });
 
     // Return immediately with run info
     // The pipeline will continue in the background

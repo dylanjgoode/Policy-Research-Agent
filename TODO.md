@@ -111,3 +111,37 @@ This misses common patterns like:
 
 1. **#5 Fragile Ireland Detection** - Core to product value; incorrect status = wrong opportunities
 2. **#7 Discovery Country Extraction** - Only affects autonomous discovery mode
+
+
+---
+
+
+Need to change the user flow so that one can search by policy area - it shouldn't be hardcoded. 
+
+Interested in this policy - has it been used elsewhere?
+
+
+---
+
+
+why are all the confidence 50% or 67%?
+
+
+---
+
+
+All the sources say 70% confident?
+
+
+---
+
+
+User flow - user pain points - a researcher wants to check for policy arbitrage - 
+
+Flow 1:
+Assumption: Ideas are cheap
+- input: idea
+- value: detailed report on all the places in the world that have 
+
+Flow 2: 
+Asummtion: Ideas are expensive
