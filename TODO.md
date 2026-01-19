@@ -135,13 +135,3 @@ All the sources say 70% confident?
 
 ---
 
-
-User flow - user pain points - a researcher wants to check for policy arbitrage - 
-
-Flow 1:
-Assumption: Ideas are cheap
-- input: idea
-- value: detailed report on all the places in the world that have 
-
-Flow 2: 
-Asummtion: Ideas are expensive

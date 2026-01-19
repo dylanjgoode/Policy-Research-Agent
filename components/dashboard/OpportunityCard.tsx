@@ -16,6 +16,8 @@ const countryFlags: Record<string, string> = {
   Netherlands: 'NL',
   'New Zealand': 'NZ',
   'South Korea': 'KR',
+  'United Kingdom': 'GB',
+  Ireland: 'IE',
 };
 
 export function OpportunityCard({ policy }: OpportunityCardProps) {

@@ -3,8 +3,13 @@ import {
   AnalyzedPolicy,
   Policy,
   RiskAssessment,
+  ActivityCollector,
 } from '../types';
 import { createPolicyWithEvidence } from '../db';
+
+export interface ReportGeneratorOptions {
+  activity?: ActivityCollector;
+}
 
 async function generateConceptHook(policy: AnalyzedPolicy): Promise<string> {
   try {
@@ -121,7 +126,11 @@ function generateGapStatement(policy: AnalyzedPolicy): string {
   }
 }
 
-export async function generateReports(policies: AnalyzedPolicy[]): Promise<Policy[]> {
+export async function generateReports(
+  policies: AnalyzedPolicy[],
+  options: ReportGeneratorOptions = {}
+): Promise<Policy[]> {
+  const { activity } = options;
   console.log(`[ReportGenerator] Generating reports for ${policies.length} policies`);
 
   const finalPolicies: Policy[] = [];
@@ -130,12 +139,42 @@ export async function generateReports(policies: AnalyzedPolicy[]): Promise<Polic
     console.log(`[ReportGenerator] Generating report: ${policy.name}`);
 
     try {
+      // Emit query events for AI-generated content
+      activity?.emit({
+        phase: 'report_generation',
+        eventType: 'query_sent',
+        itemName: policy.name,
+        metadata: { queryType: 'concept_hook' },
+      });
+      activity?.emit({
+        phase: 'report_generation',
+        eventType: 'query_sent',
+        itemName: policy.name,
+        metadata: { queryType: 'case_study' },
+      });
+      activity?.emit({
+        phase: 'report_generation',
+        eventType: 'query_sent',
+        itemName: policy.name,
+        metadata: { queryType: 'pilot_proposal' },
+      });
+
       // Generate report components
+      const startTime = Date.now();
       const [conceptHook, caseStudySummary, pilotProposal] = await Promise.all([
         generateConceptHook(policy),
         generateCaseStudy(policy),
         generatePilotProposal(policy),
       ]);
+      const duration = Date.now() - startTime;
+
+      activity?.emit({
+        phase: 'report_generation',
+        eventType: 'cache_miss', // Report generation queries are always fresh
+        apiCallDurationMs: duration,
+        itemName: policy.name,
+        metadata: { generatedComponents: ['concept_hook', 'case_study', 'pilot_proposal'] },
+      });
 
       const gapStatement = generateGapStatement(policy);
       const riskAssessment = generateRiskAssessment(policy);
@@ -148,6 +187,8 @@ export async function generateReports(policies: AnalyzedPolicy[]): Promise<Polic
       ].map((e) => ({
         url: e.url!,
         title: e.title,
+        publisher: e.publisher,
+        retrieved_at: e.retrievedAt || new Date().toISOString(),
         source_type: e.sourceType!,
         publication_date: e.publicationDate,
         evidence_type: e.evidenceType!,
@@ -158,6 +199,26 @@ export async function generateReports(policies: AnalyzedPolicy[]): Promise<Polic
         is_ireland_source: e.isIrelandSource || false,
         ireland_domain: e.irelandDomain,
       }));
+
+      const successIndexes = policy.successEvidence.map((_, index) => index);
+      const criticismOffset = policy.successEvidence.length;
+      const irelandOffset = criticismOffset + policy.criticismEvidence.length;
+      const irelandIndexes = policy.irelandEvidence.map((_, index) => irelandOffset + index);
+
+      const gapEvidenceIndexes = irelandIndexes.length > 0 ? irelandIndexes : successIndexes;
+
+      const policyClaims = [
+        {
+          claimType: 'case_study_summary',
+          claimText: caseStudySummary,
+          evidenceIndexes: successIndexes,
+        },
+        {
+          claimType: 'gap_statement',
+          claimText: gapStatement,
+          evidenceIndexes: gapEvidenceIndexes,
+        },
+      ].filter((claim) => claim.claimText.trim().length > 0 && claim.evidenceIndexes.length > 0);
 
       // Create policy and evidence atomically (single transaction)
       const savedPolicy = await createPolicyWithEvidence({
@@ -182,12 +243,33 @@ export async function generateReports(policies: AnalyzedPolicy[]): Promise<Polic
           status: policy.opportunityValue === 'high' ? 'active' : 'draft',
         },
         evidence: allEvidence,
+        policyClaims,
       });
 
       finalPolicies.push(savedPolicy);
+
+      // Emit signal_found to track successful report generation
+      activity?.emit({
+        phase: 'report_generation',
+        eventType: 'signal_found',
+        itemName: savedPolicy.name,
+        targetCountry: policy.sourceCountry,
+        metadata: {
+          slug: savedPolicy.slug,
+          opportunityValue: savedPolicy.opportunityValue,
+          evidenceCount: allEvidence.length,
+        },
+      });
+
       console.log(`[ReportGenerator] Saved: ${savedPolicy.name} (${savedPolicy.slug})`);
     } catch (error) {
       console.error(`[ReportGenerator] Error generating report for ${policy.name}:`, error);
+      activity?.emit({
+        phase: 'report_generation',
+        eventType: 'api_error',
+        itemName: policy.name,
+        metadata: { error: error instanceof Error ? error.message : String(error) },
+      });
     }
   }
 

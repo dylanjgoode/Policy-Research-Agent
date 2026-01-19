@@ -1,22 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { runResearchPipeline } from '@/lib/pipeline';
-import { getActiveRun, getRecentRuns } from '@/lib/db';
-import { PEER_COUNTRIES, type SearchMode } from '@/lib/types';
-
-const VALID_SEARCH_MODES: SearchMode[] = ['broad', 'topic', 'reverse'];
+import { getActiveRuns, getRecentRuns, cancelActiveRun } from '@/lib/db';
+import { SEARCHABLE_COUNTRIES, type PolicyInterpretation } from '@/lib/types';
 
 // GET /api/research - Get recent runs and status
 export async function GET() {
   try {
-    const [activeRun, recentRuns] = await Promise.all([
-      getActiveRun(),
+    const [activeRuns, recentRuns] = await Promise.all([
+      getActiveRuns(),
       getRecentRuns(10),
     ]);
 
     return NextResponse.json({
-      activeRun,
+      activeRuns,
       recentRuns,
-      availableCountries: PEER_COUNTRIES,
+      availableCountries: SEARCHABLE_COUNTRIES,
     });
   } catch (error) {
     console.error('[API] Error getting research status:', error);
@@ -27,11 +25,27 @@ export async function GET() {
   }
 }
 
-// POST /api/research - Start new research
+// POST /api/research - Start new research (allows concurrent runs)
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { countries, searchMode = 'broad', searchQuery } = body;
+    const { countries, policyInterpretation } = body;
+
+    // Validate interpretation
+    if (!policyInterpretation || typeof policyInterpretation !== 'object') {
+      return NextResponse.json(
+        { error: 'policyInterpretation is required' },
+        { status: 400 }
+      );
+    }
+
+    const interpretation = policyInterpretation as PolicyInterpretation;
+    if (!interpretation.policyName || !interpretation.originalInput) {
+      return NextResponse.json(
+        { error: 'policyInterpretation must include policyName and originalInput' },
+        { status: 400 }
+      );
+    }
 
     // Validate countries
     if (!countries || !Array.isArray(countries) || countries.length === 0) {
@@ -41,52 +55,22 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Validate country names
+    // Validate country names (now includes Ireland and UK)
     const validCountries = countries.filter((c: string) =>
-      PEER_COUNTRIES.includes(c as typeof PEER_COUNTRIES[number])
+      SEARCHABLE_COUNTRIES.includes(c as typeof SEARCHABLE_COUNTRIES[number])
     );
 
     if (validCountries.length === 0) {
       return NextResponse.json(
-        { error: 'No valid countries selected', validCountries: PEER_COUNTRIES },
+        { error: 'No valid countries selected', validCountries: SEARCHABLE_COUNTRIES },
         { status: 400 }
       );
     }
 
-    // Validate search mode
-    if (!VALID_SEARCH_MODES.includes(searchMode)) {
-      return NextResponse.json(
-        { error: 'Invalid search mode', validModes: VALID_SEARCH_MODES },
-        { status: 400 }
-      );
-    }
-
-    // Validate search query for topic and reverse modes
-    if ((searchMode === 'topic' || searchMode === 'reverse') && !searchQuery?.trim()) {
-      return NextResponse.json(
-        { error: 'Search query is required for topic and reverse lookup modes' },
-        { status: 400 }
-      );
-    }
-
-    // Check for active run
-    const activeRun = await getActiveRun();
-    if (activeRun) {
-      return NextResponse.json(
-        { error: 'A research run is already in progress', activeRun },
-        { status: 409 }
-      );
-    }
-
-    // Start pipeline
-    const pipelinePromise = runResearchPipeline(validCountries, {
-      searchMode,
-      searchQuery: searchQuery?.trim(),
+    // Start pipeline with interpretation (concurrent runs now allowed)
+    const result = await runResearchPipeline(validCountries, {
+      interpretation,
     });
-
-    // Return immediately with run info
-    // The pipeline will continue in the background
-    const result = await pipelinePromise;
 
     return NextResponse.json({
       message: 'Research complete',
@@ -99,6 +83,31 @@ export async function POST(request: NextRequest) {
     console.error('[API] Error starting research:', error);
     return NextResponse.json(
       { error: 'Failed to start research' },
+      { status: 500 }
+    );
+  }
+}
+
+// DELETE /api/research - Cancel all active research runs
+export async function DELETE() {
+  try {
+    const activeRuns = await getActiveRuns();
+    if (activeRuns.length === 0) {
+      return NextResponse.json(
+        { message: 'No active runs to cancel' },
+        { status: 200 }
+      );
+    }
+
+    await cancelActiveRun();
+    return NextResponse.json({
+      message: 'All active research cancelled',
+      cancelledCount: activeRuns.length,
+    });
+  } catch (error) {
+    console.error('[API] Error cancelling research:', error);
+    return NextResponse.json(
+      { error: 'Failed to cancel research' },
       { status: 500 }
     );
   }

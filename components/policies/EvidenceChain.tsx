@@ -21,6 +21,12 @@ function EvidenceItem({ item }: { item: Evidence }) {
         {item.claim}
       </p>
 
+      {item.excerpt && (
+        <p className="text-xs text-[var(--text-muted)] italic mb-2">
+          "{item.excerpt}"
+        </p>
+      )}
+
       <a
         href={item.url}
         target="_blank"
@@ -33,8 +39,12 @@ function EvidenceItem({ item }: { item: Evidence }) {
 
       <div className="flex items-center gap-3 mt-2 text-xs text-[var(--text-muted)]">
         <span>{item.sourceType.replace('_', ' ')}</span>
+        {item.publisher && <span>{item.publisher}</span>}
         {item.publicationDate && (
           <span>{new Date(item.publicationDate).toLocaleDateString('en-IE')}</span>
+        )}
+        {item.retrievedAt && (
+          <span>Retrieved {new Date(item.retrievedAt).toLocaleDateString('en-IE')}</span>
         )}
         {item.confidence !== null && (
           <span>{Math.round(item.confidence * 100)}% confidence</span>

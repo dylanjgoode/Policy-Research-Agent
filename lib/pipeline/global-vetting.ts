@@ -6,12 +6,17 @@ import {
   EvidenceType,
   SourceType,
   Sentiment,
+  ActivityCollector,
 } from '../types';
-import { extractCitationClaims } from './evidence-utils';
+import { extractCitationClaims, derivePublisher, normalizeSnippet } from './evidence-utils';
+
+export interface GlobalVettingOptions {
+  activity?: ActivityCollector;
+}
 
 function extractEvidenceFromResponse(
   content: string,
-  citations: { url: string; title?: string }[],
+  citations: { url: string; title?: string; snippet?: string }[],
   policyName: string,
   evidenceType: EvidenceType,
   sentiment: Sentiment
@@ -21,6 +26,7 @@ function extractEvidenceFromResponse(
     content,
     policyName
   );
+  const retrievedAt = new Date().toISOString();
 
   // Create evidence entries from citations
   for (const [index, citation] of citations.entries()) {
@@ -42,11 +48,13 @@ function extractEvidenceFromResponse(
       policyId: '', // Will be set when saving
       url: citation.url,
       title: citation.title || null,
+      publisher: derivePublisher(citation.url),
+      retrievedAt,
       sourceType,
       publicationDate: null,
       evidenceType,
       claim,
-      excerpt: null,
+      excerpt: normalizeSnippet(citation.snippet),
       sentiment,
       confidence,
       isIrelandSource: false,
@@ -79,7 +87,11 @@ function calculateScore(evidence: Evidence[], type: 'success' | 'criticism'): nu
   return Math.round(baseScore * confidenceFactor * 100) / 100;
 }
 
-export async function globalVetting(policies: PolicySignal[]): Promise<VettedPolicy[]> {
+export async function globalVetting(
+  policies: PolicySignal[],
+  options: GlobalVettingOptions = {}
+): Promise<VettedPolicy[]> {
+  const { activity } = options;
   console.log(`[GlobalVetting] Starting vetting for ${policies.length} policies`);
 
   const vettedPolicies: VettedPolicy[] = [];
@@ -93,8 +105,28 @@ export async function globalVetting(policies: PolicySignal[]): Promise<VettedPol
     console.log(`[GlobalVetting] Vetting: ${policy.name} (${policy.sourceCountry})`);
 
     try {
+      // Emit query_sent for success evidence search
+      activity?.emit({
+        phase: 'global_vetting',
+        eventType: 'query_sent',
+        itemName: policy.name,
+        targetCountry: policy.sourceCountry,
+        metadata: { queryType: 'success_evidence' },
+      });
+
       // Search for success evidence
+      const startTime = Date.now();
       const successResult = await searchSuccessEvidence(policy.name, policy.sourceCountry);
+      const successDuration = Date.now() - startTime;
+
+      activity?.emit({
+        phase: 'global_vetting',
+        eventType: successResult.fromCache ? 'cache_hit' : 'cache_miss',
+        apiCallDurationMs: successDuration,
+        tokensUsed: successResult.usage.totalTokens,
+        metadata: { queryType: 'success_evidence' },
+      });
+
       const successEvidence = extractEvidenceFromResponse(
         successResult.content,
         successResult.citations,
@@ -103,8 +135,43 @@ export async function globalVetting(policies: PolicySignal[]): Promise<VettedPol
         'positive'
       );
 
+      // Emit evidence_found for each piece of success evidence
+      for (const evidence of successEvidence) {
+        activity?.emit({
+          phase: 'global_vetting',
+          eventType: 'evidence_found',
+          itemName: policy.name,
+          targetCountry: policy.sourceCountry,
+          metadata: {
+            sourceType: evidence.sourceType,
+            evidenceType: 'success_metric',
+            url: evidence.url,
+          },
+        });
+      }
+
+      // Emit query_sent for criticism search
+      activity?.emit({
+        phase: 'global_vetting',
+        eventType: 'query_sent',
+        itemName: policy.name,
+        targetCountry: policy.sourceCountry,
+        metadata: { queryType: 'criticism' },
+      });
+
       // Adversarial search for criticisms
+      const criticismStartTime = Date.now();
       const criticismResult = await searchCriticisms(policy.name, policy.sourceCountry);
+      const criticismDuration = Date.now() - criticismStartTime;
+
+      activity?.emit({
+        phase: 'global_vetting',
+        eventType: criticismResult.fromCache ? 'cache_hit' : 'cache_miss',
+        apiCallDurationMs: criticismDuration,
+        tokensUsed: criticismResult.usage.totalTokens,
+        metadata: { queryType: 'criticism' },
+      });
+
       const criticismEvidence = extractEvidenceFromResponse(
         criticismResult.content,
         criticismResult.citations,
@@ -112,6 +179,21 @@ export async function globalVetting(policies: PolicySignal[]): Promise<VettedPol
         'criticism',
         'negative'
       );
+
+      // Emit evidence_found for each piece of criticism evidence
+      for (const evidence of criticismEvidence) {
+        activity?.emit({
+          phase: 'global_vetting',
+          eventType: 'evidence_found',
+          itemName: policy.name,
+          targetCountry: policy.sourceCountry,
+          metadata: {
+            sourceType: evidence.sourceType,
+            evidenceType: 'criticism',
+            url: evidence.url,
+          },
+        });
+      }
 
       // Calculate scores
       const successScore = calculateScore(successEvidence, 'success');
@@ -130,6 +212,13 @@ export async function globalVetting(policies: PolicySignal[]): Promise<VettedPol
       };
     } catch (error) {
       console.error(`[GlobalVetting] Error vetting ${policy.name}:`, error);
+      activity?.emit({
+        phase: 'global_vetting',
+        eventType: 'api_error',
+        itemName: policy.name,
+        targetCountry: policy.sourceCountry,
+        metadata: { error: error instanceof Error ? error.message : String(error) },
+      });
       // Still include policy with zero scores
       return {
         ...policy,
@@ -153,6 +242,19 @@ export async function globalVetting(policies: PolicySignal[]): Promise<VettedPol
 
   // Filter out policies with no success evidence
   const filtered = vettedPolicies.filter((p) => p.successScore > 0);
+
+  // Emit signal_rejected for policies that failed vetting
+  const rejected = vettedPolicies.filter((p) => p.successScore === 0);
+  for (const policy of rejected) {
+    activity?.emit({
+      phase: 'global_vetting',
+      eventType: 'signal_rejected',
+      itemName: policy.name,
+      targetCountry: policy.sourceCountry,
+      rejectionReason: 'No success evidence found (successScore = 0)',
+    });
+  }
+
   console.log(`[GlobalVetting] Complete. ${filtered.length}/${policies.length} policies passed vetting`);
 
   return filtered;

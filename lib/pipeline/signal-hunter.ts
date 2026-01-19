@@ -1,9 +1,9 @@
 import { perplexitySearchWithRetry } from '../perplexity';
-import { PolicySignal, PeerCountry, PerplexityCitation, SearchMode } from '../types';
+import { PolicySignal, PerplexityCitation, PolicyInterpretation, ActivityCollector } from '../types';
 
 export interface SignalHunterOptions {
-  searchMode?: SearchMode;
-  searchQuery?: string;
+  interpretation: PolicyInterpretation;
+  activity?: ActivityCollector;
 }
 
 // Policy domains to search across all countries
@@ -52,6 +52,14 @@ const COUNTRY_CONTEXT: Record<string, { agencies: string[]; specializations: str
   'South Korea': {
     agencies: ['KISED', 'KOTRA', 'TIPS Program', 'K-Startup Grand Challenge'],
     specializations: ['K-content', 'semiconductors', 'battery tech', 'smart manufacturing'],
+  },
+  'United Kingdom': {
+    agencies: ['Innovate UK', 'British Business Bank', 'UKRI', 'Tech Nation'],
+    specializations: ['fintech', 'life sciences', 'creative industries', 'clean growth'],
+  },
+  Ireland: {
+    agencies: ['Enterprise Ireland', 'IDA Ireland', 'Science Foundation Ireland'],
+    specializations: ['pharma', 'tech multinationals', 'fintech', 'medtech'],
   },
 };
 
@@ -133,87 +141,105 @@ ${content}`,
   }
 }
 
-// Generate queries based on search mode
-function generateQueriesForMode(
+// Generate queries for reverse lookup based on policy interpretation
+function generateQueriesForInterpretation(
   country: string,
-  options?: SignalHunterOptions
+  interpretation: PolicyInterpretation
 ): { queries: string[]; systemPrompt: string } {
-  const searchMode = options?.searchMode || 'broad';
-  const searchQuery = options?.searchQuery || '';
   const context = COUNTRY_CONTEXT[country];
   const agencyMention = context?.agencies?.slice(0, 2).join(' OR ') || '';
+  const policyName = interpretation.policyName;
+  const category = interpretation.category;
+  const aliases = interpretation.alsoKnownAs || [];
+  const levers = interpretation.levers;
 
-  switch (searchMode) {
-    case 'topic':
-      // Single focused query for the user's specific topic
-      return {
-        queries: [
-          `"${searchQuery}" policy program ${country} government ${agencyMention} ${RECENT_YEARS}`,
-        ],
-        systemPrompt: `You are a policy research analyst. Search for specific government policies and programs
-related to "${searchQuery}" from ${country}. Focus on:
-1. Named programs and initiatives (not vague concepts)
-2. Government policies, legislation, or incentive schemes
-3. Measurable outcomes and success metrics
-Include program names, key features, and any available metrics. Be factual and cite sources.`,
-      };
+  // Build name variants for broader search coverage
+  const nameVariants = [policyName, ...aliases.slice(0, 2)];
+  const nameQuery = nameVariants.map((n) => `"${n}"`).join(' OR ');
 
-    case 'reverse':
-      // Find implementations of a specific policy in this country
-      return {
-        queries: [
-          `"${searchQuery}" ${country} implementation adoption results government program`,
-        ],
-        systemPrompt: `You are a policy research analyst. Search for whether ${country} has implemented
-a policy similar to "${searchQuery}". Focus on:
+  // Multiple queries using enriched interpretation data
+  const queries = [
+    // Primary: search by policy name variants
+    `(${nameQuery}) ${country} implementation adoption results government program`,
+    // Secondary: search by category + agency
+    `${category} policy ${country} ${agencyMention} program initiative ${RECENT_YEARS}`,
+  ];
+
+  // Add mechanism-specific query if we have lever data
+  if (levers?.mechanism && levers?.targetGroup) {
+    queries.push(
+      `${levers.mechanism} ${levers.targetGroup} ${country} government policy program ${RECENT_YEARS}`
+    );
+  }
+
+  // Build context from levers for the system prompt
+  const leverContext = levers
+    ? `
+Policy design details:
+- Target group: ${levers.targetGroup || 'Not specified'}
+- Mechanism: ${levers.mechanism || 'Not specified'}
+- Sector: ${levers.sector || 'Sector-agnostic'}
+- Intended outcome: ${levers.intendedOutcome || 'Not specified'}`
+    : '';
+
+  const systemPrompt = `You are a policy research analyst. Search for whether ${country} has implemented
+a policy similar to "${policyName}" (${category}).
+${aliases.length > 0 ? `\nAlso known as: ${aliases.join(', ')}` : ''}
+
+Context from user: "${interpretation.summary}"
+${leverContext}
+
+Focus on:
 1. Has this country adopted a similar program? What is it called locally?
 2. What were the results and outcomes?
 3. Any variations or adaptations made?
-4. Criticism or challenges faced
-Be factual and cite sources.`,
-      };
+4. Key metrics and evidence of success or failure
 
-    case 'broad':
-    default:
-      // Original behavior: domain + specialization queries
-      return {
-        queries: COUNTRY_QUERIES[country] || [],
-        systemPrompt: `You are a policy research analyst. Search for specific innovation policy mechanisms,
-legislative tools, or government programs from ${country}. Focus on quantifiable programs with
-clear names (e.g., "R&D Tax Super-deduction", "Startup Visa Program", "Innovation Fund Grant").
-Include program names, key features, and any available metrics. Be factual and cite sources.`,
-      };
-  }
+Be factual and cite sources.`;
+
+  return { queries, systemPrompt };
 }
 
 export async function signalHunter(
   countries: string[],
-  options?: SignalHunterOptions
+  options: SignalHunterOptions
 ): Promise<PolicySignal[]> {
-  const searchMode = options?.searchMode || 'broad';
-  console.log(`[SignalHunter] Starting scan (mode: ${searchMode}) for countries: ${countries.join(', ')}`);
-  if (options?.searchQuery) {
-    console.log(`[SignalHunter] Search query: "${options.searchQuery}"`);
-  }
+  const { interpretation, activity } = options;
+  console.log(`[SignalHunter] Starting scan for policy: "${interpretation.policyName}"`);
+  console.log(`[SignalHunter] Countries: ${countries.join(', ')}`);
 
   const allPolicies: PolicySignal[] = [];
   const seenPolicies = new Set<string>();
 
   for (const country of countries) {
-    const { queries, systemPrompt } = generateQueriesForMode(country, options);
-
-    if (queries.length === 0) {
-      console.warn(`[SignalHunter] No queries generated for country: ${country}`);
-      continue;
-    }
+    const { queries, systemPrompt } = generateQueriesForInterpretation(country, interpretation);
 
     console.log(`[SignalHunter] Scanning ${country} with ${queries.length} queries...`);
 
     for (const query of queries) {
       try {
+        // Emit query_sent event
+        activity?.emit({
+          phase: 'signal_hunter',
+          eventType: 'query_sent',
+          queryText: query,
+          targetCountry: country,
+        });
+
+        const startTime = Date.now();
         const result = await perplexitySearchWithRetry({
           query,
           systemPrompt,
+        });
+        const duration = Date.now() - startTime;
+
+        // Emit cache hit/miss event
+        activity?.emit({
+          phase: 'signal_hunter',
+          eventType: result.fromCache ? 'cache_hit' : 'cache_miss',
+          apiCallDurationMs: duration,
+          tokensUsed: result.usage.totalTokens,
+          targetCountry: country,
         });
 
         const policies = await extractPoliciesFromResponse(
@@ -228,12 +254,27 @@ export async function signalHunter(
           if (!seenPolicies.has(key)) {
             seenPolicies.add(key);
             allPolicies.push(policy);
+
+            // Emit signal_found event
+            activity?.emit({
+              phase: 'signal_hunter',
+              eventType: 'signal_found',
+              itemName: policy.name,
+              targetCountry: country,
+              metadata: { category: policy.category },
+            });
           }
         }
 
         console.log(`[SignalHunter] Found ${policies.length} policies from query`);
       } catch (error) {
         console.error(`[SignalHunter] Error searching ${country}:`, error);
+        activity?.emit({
+          phase: 'signal_hunter',
+          eventType: 'api_error',
+          targetCountry: country,
+          metadata: { error: error instanceof Error ? error.message : String(error) },
+        });
       }
     }
   }

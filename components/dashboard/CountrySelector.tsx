@@ -19,6 +19,7 @@ const countryInfo: Record<string, { flag: string; region: string }> = {
   Netherlands: { flag: 'NL', region: 'Western Europe' },
   'New Zealand': { flag: 'NZ', region: 'Asia-Pacific' },
   'South Korea': { flag: 'KR', region: 'Asia-Pacific' },
+  'United Kingdom': { flag: 'GB', region: 'Western Europe' },
 };
 
 export function CountrySelector({

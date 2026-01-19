@@ -5,8 +5,13 @@ import {
   Evidence,
   IrelandStatus,
   OpportunityValue,
+  ActivityCollector,
 } from '../types';
-import { extractCitationClaims } from './evidence-utils';
+import { extractCitationClaims, derivePublisher, normalizeSnippet } from './evidence-utils';
+
+export interface GapAnalysisOptions {
+  activity?: ActivityCollector;
+}
 
 // Irish domains to identify
 const IRISH_DOMAINS = [
@@ -133,7 +138,11 @@ function calculateOpportunityValue(
   return 'low';
 }
 
-export async function gapAnalysis(policies: VettedPolicy[]): Promise<AnalyzedPolicy[]> {
+export async function gapAnalysis(
+  policies: VettedPolicy[],
+  options: GapAnalysisOptions = {}
+): Promise<AnalyzedPolicy[]> {
+  const { activity } = options;
   console.log(`[GapAnalysis] Starting Ireland gap analysis for ${policies.length} policies`);
 
   const analyzedPolicies: AnalyzedPolicy[] = [];
@@ -147,12 +156,33 @@ export async function gapAnalysis(policies: VettedPolicy[]): Promise<AnalyzedPol
     console.log(`[GapAnalysis] Analyzing: ${policy.name}`);
 
     try {
+      // Emit query_sent for Irish sources search
+      activity?.emit({
+        phase: 'gap_analysis',
+        eventType: 'query_sent',
+        itemName: policy.name,
+        targetCountry: 'Ireland',
+        metadata: { queryType: 'irish_sources' },
+      });
+
       // Search Irish sources
+      const startTime = Date.now();
       const irishResult = await searchIrishSources(policy.name, policy.category);
+      const duration = Date.now() - startTime;
+
+      activity?.emit({
+        phase: 'gap_analysis',
+        eventType: irishResult.fromCache ? 'cache_hit' : 'cache_miss',
+        apiCallDurationMs: duration,
+        tokensUsed: irishResult.usage.totalTokens,
+        metadata: { queryType: 'irish_sources' },
+      });
+
       const { claimByCitation, fallbackClaim } = extractCitationClaims(
         irishResult.content,
         policy.name
       );
+      const retrievedAt = new Date().toISOString();
 
       // Extract Irish-specific evidence
       const irelandEvidence: Evidence[] = irishResult.citations.map((citation, index) => {
@@ -164,13 +194,15 @@ export async function gapAnalysis(policies: VettedPolicy[]): Promise<AnalyzedPol
           policyId: '',
           url: citation.url,
           title: citation.title || null,
+          publisher: derivePublisher(citation.url),
+          retrievedAt,
           sourceType: irelandDomain?.includes('gov') || irelandDomain?.includes('oireachtas')
             ? 'gov_doc' as const
             : 'news' as const,
           publicationDate: null,
           evidenceType: 'adoption_rate' as const,
           claim,
-          excerpt: null,
+          excerpt: normalizeSnippet(citation.snippet),
           sentiment: 'neutral' as const,
           confidence: 0.7,
           isIrelandSource: irelandDomain !== null,
@@ -178,6 +210,23 @@ export async function gapAnalysis(policies: VettedPolicy[]): Promise<AnalyzedPol
           createdAt: new Date().toISOString(),
         };
       });
+
+      // Emit evidence_found for Irish sources
+      for (const evidence of irelandEvidence) {
+        if (evidence.isIrelandSource) {
+          activity?.emit({
+            phase: 'gap_analysis',
+            eventType: 'evidence_found',
+            itemName: policy.name,
+            targetCountry: 'Ireland',
+            metadata: {
+              sourceType: evidence.sourceType,
+              irelandDomain: evidence.irelandDomain,
+              url: evidence.url,
+            },
+          });
+        }
+      }
 
       // Determine Ireland status
       const { status: irelandStatus, notes: irelandNotes } = determineIrelandStatus(
@@ -204,6 +253,12 @@ export async function gapAnalysis(policies: VettedPolicy[]): Promise<AnalyzedPol
       };
     } catch (error) {
       console.error(`[GapAnalysis] Error analyzing ${policy.name}:`, error);
+      activity?.emit({
+        phase: 'gap_analysis',
+        eventType: 'api_error',
+        itemName: policy.name,
+        metadata: { error: error instanceof Error ? error.message : String(error) },
+      });
       // Include with pending status
       return {
         ...policy,
@@ -222,6 +277,24 @@ export async function gapAnalysis(policies: VettedPolicy[]): Promise<AnalyzedPol
 
     if (i + BATCH_SIZE < policies.length) {
       await delay(BATCH_DELAY_MS);
+    }
+  }
+
+  // Emit item_filtered for low opportunity policies
+  for (const policy of analyzedPolicies) {
+    if (policy.opportunityValue === 'low' || policy.opportunityValue === null) {
+      activity?.emit({
+        phase: 'gap_analysis',
+        eventType: 'item_filtered',
+        itemName: policy.name,
+        rejectionReason: policy.irelandStatus === 'exists'
+          ? 'Policy already exists in Ireland'
+          : 'Low opportunity value based on evidence scores',
+        metadata: {
+          irelandStatus: policy.irelandStatus,
+          opportunityValue: policy.opportunityValue,
+        },
+      });
     }
   }
 

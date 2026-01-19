@@ -13,6 +13,22 @@ export function extractCitationClaims(
   return { claimByCitation, strengthByCitation, fallbackClaim };
 }
 
+export function derivePublisher(url: string): string | null {
+  try {
+    const hostname = new URL(url).hostname.replace(/^www\./, '');
+    return hostname || null;
+  } catch {
+    return null;
+  }
+}
+
+export function normalizeSnippet(snippet?: string | null, maxLength = 280): string | null {
+  if (!snippet) return null;
+  const cleaned = snippet.replace(/\s+/g, ' ').trim();
+  if (!cleaned) return null;
+  return cleaned.length > maxLength ? `${cleaned.slice(0, maxLength - 3)}...` : cleaned;
+}
+
 function splitContentIntoSegments(content: string): string[] {
   const lines = content
     .split(/\n+/)

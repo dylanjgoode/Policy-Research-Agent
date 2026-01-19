@@ -1,4 +1,4 @@
-import { PerplexityResponse, PerplexityCitation } from './types';
+import { PerplexityResponse, PerplexityCitation, PolicyInterpretation } from './types';
 import { redis } from './redis';
 
 const PERPLEXITY_API_URL = 'https://api.perplexity.ai/chat/completions';
@@ -55,7 +55,7 @@ export async function perplexitySearch(options: PerplexitySearchOptions): Promis
     const cached = await redis.get<PerplexityResponse>(cacheKey);
     if (cached) {
       console.log('[Perplexity] Cache hit for query:', query.slice(0, 50));
-      return cached;
+      return { ...cached, fromCache: true };
     }
   } catch (error) {
     // Cache miss or error - continue with API call
@@ -91,12 +91,14 @@ export async function perplexitySearch(options: PerplexitySearchOptions): Promis
   const data = await response.json();
 
   // Extract citations from response
-  const citations: PerplexityCitation[] = (data.citations || []).map((c: string | { url: string; title?: string }) => {
-    if (typeof c === 'string') {
-      return { url: c };
+  const citations: PerplexityCitation[] = (data.citations || []).map(
+    (c: string | { url: string; title?: string; snippet?: string }) => {
+      if (typeof c === 'string') {
+        return { url: c };
+      }
+      return { url: c.url, title: c.title, snippet: c.snippet };
     }
-    return { url: c.url, title: c.title };
-  });
+  );
 
   const result: PerplexityResponse = {
     content: data.choices?.[0]?.message?.content || '',
@@ -107,6 +109,7 @@ export async function perplexitySearch(options: PerplexitySearchOptions): Promis
       completionTokens: data.usage?.completion_tokens || 0,
       totalTokens: data.usage?.total_tokens || 0,
     },
+    fromCache: false,
   };
 
   // Cache the result
@@ -260,4 +263,67 @@ Reasoning: <1-3 sentences>`,
     ...result,
     citations: irishCitations,
   };
+}
+
+// Interpret a user's policy idea using AI
+export async function interpretPolicyIdea(ideaText: string): Promise<PolicyInterpretation> {
+  const result = await perplexitySearchWithRetry({
+    query: ideaText,
+    systemPrompt: `You are a policy research analyst. The user has described a policy idea they want to research.
+
+Your task is to extract a structured interpretation:
+
+1. **policyName**: A concise canonical name (e.g., "R&D Tax Credit", "Startup Visa Program")
+2. **alsoKnownAs**: 2-4 alternative names or synonyms this policy might be called in different countries
+3. **category**: One of: R&D Incentives, Talent Visa, Startup Support, Innovation Fund, Tax Incentive, Digital Policy, Housing Policy, Healthcare Policy, Education Policy, Regulatory Sandbox, Other
+4. **summary**: 2-3 sentences on what this policy involves and what problem it addresses
+5. **levers**: The specific policy design elements:
+   - targetGroup: Who benefits (e.g., "Early-stage startups", "R&D-intensive SMEs", "Foreign entrepreneurs")
+   - mechanism: How it works (e.g., "Tax credit", "Direct grant", "Regulatory exemption", "Visa pathway")
+   - sector: Specific sector if any, or null if sector-agnostic
+   - intendedOutcome: What change it aims to create (e.g., "Increase private R&D spending")
+
+Return ONLY valid JSON in this exact format (no markdown, no extra text):
+{
+  "policyName": "...",
+  "alsoKnownAs": ["...", "..."],
+  "category": "...",
+  "summary": "...",
+  "levers": {
+    "targetGroup": "...",
+    "mechanism": "...",
+    "sector": null,
+    "intendedOutcome": "..."
+  }
+}`,
+    temperature: 0.3,
+    maxTokens: 768,
+    returnCitations: false,
+  });
+
+  // Parse JSON from response
+  const content = result.content.trim();
+  const jsonMatch = content.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) {
+    throw new Error('Failed to parse interpretation response: no JSON found');
+  }
+
+  try {
+    const parsed = JSON.parse(jsonMatch[0]);
+    return {
+      policyName: parsed.policyName || 'Unknown Policy',
+      alsoKnownAs: Array.isArray(parsed.alsoKnownAs) ? parsed.alsoKnownAs : [],
+      category: parsed.category || 'Other',
+      summary: parsed.summary || ideaText,
+      originalInput: ideaText,
+      levers: {
+        targetGroup: parsed.levers?.targetGroup || '',
+        mechanism: parsed.levers?.mechanism || '',
+        sector: parsed.levers?.sector || null,
+        intendedOutcome: parsed.levers?.intendedOutcome || '',
+      },
+    };
+  } catch (parseError) {
+    throw new Error(`Failed to parse interpretation JSON: ${parseError}`);
+  }
 }

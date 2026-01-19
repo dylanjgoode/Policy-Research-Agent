@@ -6,12 +6,18 @@ import {
   Run,
   Policy,
   Evidence,
+  PolicyInterpretation,
   runRowToRun,
   policyRowToPolicy,
   evidenceRowToEvidence,
   RunStatus,
   Phase,
   SearchMode,
+  ActivityEvent,
+  ActivitySummary,
+  RunActivityRow,
+  activityRowToEvent,
+  ActivityEventType,
 } from './types';
 
 // Singleton Supabase client
@@ -43,7 +49,8 @@ export async function createRun(
   type: 'manual' | 'discovery',
   countries?: string[],
   searchMode?: SearchMode,
-  searchQuery?: string
+  searchQuery?: string,
+  interpretation?: PolicyInterpretation
 ): Promise<Run> {
   const { data, error } = await getSupabase()
     .from('runs')
@@ -53,6 +60,7 @@ export async function createRun(
       countries: countries || null,
       search_mode: searchMode || null,
       search_query: searchQuery || null,
+      interpretation: interpretation || null,
       started_at: new Date().toISOString(),
     })
     .select()
@@ -141,18 +149,64 @@ export async function getRecentRuns(limit = 10): Promise<Run[]> {
 }
 
 export async function getActiveRun(): Promise<Run | null> {
+  const runs = await getActiveRuns();
+  return runs.length > 0 ? runs[0] : null;
+}
+
+export async function getActiveRuns(): Promise<Run[]> {
   const { data, error } = await getSupabase()
     .from('runs')
     .select()
     .eq('status', 'running')
+    .order('created_at', { ascending: false });
+
+  if (error) throw new Error(`Failed to get active runs: ${error.message}`);
+  return (data as RunRow[]).map(runRowToRun);
+}
+
+export async function cancelRun(runId: string): Promise<void> {
+  const { error } = await getSupabase()
+    .from('runs')
+    .update({
+      status: 'cancelled' as RunStatus,
+      error_message: 'Cancelled by user',
+      completed_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', runId)
+    .eq('status', 'running');
+
+  if (error) throw new Error(`Failed to cancel run: ${error.message}`);
+}
+
+export async function isRunCancelled(runId: string): Promise<boolean> {
+  const { data, error } = await getSupabase()
+    .from('runs')
+    .select('status')
+    .eq('id', runId)
     .single();
 
   if (error) {
-    if (error.code === 'PGRST116') return null;
-    throw new Error(`Failed to get active run: ${error.message}`);
+    if (error.code === 'PGRST116') return true; // Run not found, treat as cancelled
+    throw new Error(`Failed to check run status: ${error.message}`);
   }
 
-  return runRowToRun(data as RunRow);
+  return data.status === 'cancelled';
+}
+
+export async function cancelActiveRun(): Promise<boolean> {
+  const { error } = await getSupabase()
+    .from('runs')
+    .update({
+      status: 'cancelled' as RunStatus,
+      error_message: 'Cancelled by user',
+      completed_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq('status', 'running');
+
+  if (error) throw new Error(`Failed to cancel run: ${error.message}`);
+  return true;
 }
 
 // ============ Policies ============
@@ -263,6 +317,11 @@ export async function getHighValuePolicies(limit = 3): Promise<Policy[]> {
 export interface CreatePolicyWithEvidenceInput {
   policy: Partial<PolicyRow>;
   evidence: Partial<EvidenceRow>[];
+  policyClaims?: {
+    claimType: string;
+    claimText: string;
+    evidenceIndexes: number[];
+  }[];
 }
 
 export async function createPolicyWithEvidence(
@@ -280,6 +339,8 @@ export async function createPolicyWithEvidence(
   const evidenceData = input.evidence.map((e) => ({
     url: e.url,
     title: e.title,
+    publisher: e.publisher,
+    retrieved_at: e.retrieved_at,
     source_type: e.source_type,
     publication_date: e.publication_date,
     evidence_type: e.evidence_type,
@@ -291,9 +352,16 @@ export async function createPolicyWithEvidence(
     ireland_domain: e.ireland_domain,
   }));
 
+  const policyClaimsData = (input.policyClaims || []).map((claim) => ({
+    claim_type: claim.claimType,
+    claim_text: claim.claimText,
+    evidence_indexes: claim.evidenceIndexes,
+  }));
+
   const { data, error } = await getSupabase().rpc('create_policy_with_evidence', {
     policy_data: policyData,
     evidence_data: evidenceData,
+    policy_claims_data: policyClaimsData,
   });
 
   if (error) {
@@ -338,4 +406,79 @@ export async function getEvidenceForPolicy(policyId: string): Promise<Evidence[]
 
   if (error) throw new Error(`Failed to get evidence: ${error.message}`);
   return (data as EvidenceRow[]).map(evidenceRowToEvidence);
+}
+
+// ============ Activity Logging ============
+
+export async function insertActivities(events: ActivityEvent[]): Promise<void> {
+  if (events.length === 0) return;
+
+  const rows = events.map((e) => ({
+    run_id: e.runId,
+    phase: e.phase,
+    event_type: e.eventType,
+    timestamp: e.timestamp,
+    query_text: e.queryText || null,
+    target_country: e.targetCountry || null,
+    item_name: e.itemName || null,
+    item_count: e.itemCount || null,
+    rejection_reason: e.rejectionReason || null,
+    api_call_duration_ms: e.apiCallDurationMs || null,
+    tokens_used: e.tokensUsed || null,
+    cache_hit: e.cacheHit || false,
+    metadata: e.metadata || null,
+  }));
+
+  const { error } = await getSupabase().from('run_activities').insert(rows);
+
+  if (error) throw new Error(`Failed to insert activities: ${error.message}`);
+}
+
+export async function updateRunActivitySummary(
+  runId: string,
+  summary: ActivitySummary
+): Promise<void> {
+  const { error } = await getSupabase()
+    .from('runs')
+    .update({
+      activity_summary: summary,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', runId);
+
+  if (error) throw new Error(`Failed to update activity summary: ${error.message}`);
+}
+
+export async function getRunActivities(
+  runId: string,
+  filters?: { phase?: Phase; eventType?: ActivityEventType }
+): Promise<ActivityEvent[]> {
+  let query = getSupabase()
+    .from('run_activities')
+    .select()
+    .eq('run_id', runId)
+    .order('timestamp', { ascending: true });
+
+  if (filters?.phase) query = query.eq('phase', filters.phase);
+  if (filters?.eventType) query = query.eq('event_type', filters.eventType);
+
+  const { data, error } = await query;
+  if (error) throw new Error(`Failed to get activities: ${error.message}`);
+
+  return (data as RunActivityRow[]).map(activityRowToEvent);
+}
+
+export async function getRunWithActivity(runId: string): Promise<Run | null> {
+  const { data, error } = await getSupabase()
+    .from('runs')
+    .select()
+    .eq('id', runId)
+    .single();
+
+  if (error) {
+    if (error.code === 'PGRST116') return null;
+    throw new Error(`Failed to get run with activity: ${error.message}`);
+  }
+
+  return runRowToRun(data as RunRow);
 }
